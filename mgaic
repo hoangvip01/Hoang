@@ -1,0 +1,1146 @@
+-- ═══════════════════════════════════════════════
+--  ROBLOX UNIVERSAL SCRIPT v3.3
+--  Fix Lag: port từ Utility Menu v6.3 (cực mạnh)
+--  Fix Lag Farm: mọi thứ đơn sắc xám
+--  Compatible: Synapse X, KRNL, Fluxus, Delta
+-- ═══════════════════════════════════════════════
+
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local HttpService       = game:GetService("HttpService")
+local Lighting          = game:GetService("Lighting")
+local UserSettings      = game:GetService("UserSettings")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera      = workspace.CurrentCamera
+local character   = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local hrp         = character:WaitForChild("HumanoidRootPart")
+local humanoid    = character:WaitForChild("Humanoid")
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    character = char
+    hrp       = char:WaitForChild("HumanoidRootPart")
+    humanoid  = char:WaitForChild("Humanoid")
+end)
+
+-- ═══════════════════════════════════════════════
+-- CONFIG
+-- ═══════════════════════════════════════════════
+local CONFIG = {
+    SpeedHack=false, SpeedValue=16,
+    JumpHack=false, JumpValue=50,
+    FlyHack=false, Noclip=false,
+    InfiniteJump=false, AutoWalk=false,
+    AutoWalkX=0, AutoWalkY=0, AutoWalkZ=0,
+    Aimbot=false, AimbotPart="Head",
+    ESP=false, Wallhack=false,
+    TriggerBot=false, AutoKill=false, AutoAttack=false,
+    AutoHeal=false, HealThreshold=50, AutoDodge=false,
+    AutoFarm=false, AutoCollect=false, AutoClick=false,
+    AutoSell=false, FarmQuai=false, FarmQuaiBay=false,
+    AutoBoss=false, AutoDungeon=false, AutoDaily=false,
+    AutoRebirth=false, AutoUpgrade=false, AutoPet=false,
+    AutoNhanQuest=false, AutoTraQuest=false,
+    AutoNhanThuong=false, AutoChainQuest=false, AutoDailyQuest=false,
+    AntiBan=false, AntiKick=false,
+    AntiFling=false, AntiVoid=false, GodMode=false,
+    -- Lag fix (2 mode, loại trừ nhau)
+    FixLag=false,      -- mode nhẹ: giữ màu gốc
+    FixLagFarm=false,  -- mode farm: mọi thứ xám
+    FPSBoost=false, FullBright=false,
+    RemoveFog=false, RemoveEffects=false,
+    FLY_HEIGHT=15, ATTACK_RANGE=20, DROP_RANGE=50,
+    AutoEXP=true,
+}
+
+local configPath = "UC_Config_v33.json"
+local function saveConfig()
+    if writefile then writefile(configPath, HttpService:JSONEncode(CONFIG)) end
+end
+local function loadConfig()
+    if isfile and isfile(configPath) then
+        local ok, data = pcall(function() return HttpService:JSONDecode(readfile(configPath)) end)
+        if ok and data then for k,v in pairs(data) do CONFIG[k]=v end end
+    end
+end
+loadConfig()
+
+-- ═══════════════════════════════════════════════
+-- HELPERS
+-- ═══════════════════════════════════════════════
+local function teleportTo(pos)
+    if hrp then hrp.CFrame = CFrame.new(pos) end
+end
+local function fireByKW(kw)
+    for _, r in pairs(game.ReplicatedStorage:GetDescendants()) do
+        if r:IsA("RemoteEvent") and r.Name:lower():find(kw) then
+            pcall(function() r:FireServer() end)
+        end
+    end
+end
+local function findNearestMonster()
+    local nearest, minDist = nil, math.huge
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj ~= character then
+            local mH = obj:FindFirstChild("Humanoid")
+            local mR = obj:FindFirstChild("HumanoidRootPart")
+            if mH and mR and mH.Health > 0 and not Players:GetPlayerFromCharacter(obj) then
+                local d = (mR.Position - hrp.Position).Magnitude
+                if d < minDist then minDist=d; nearest=obj end
+            end
+        end
+    end
+    return nearest
+end
+local PROTECT_KWS = {"rương","ruong","chest","treasure","fruit","devil","loot","drop","item"}
+local function isProtected(inst)
+    if not inst or not inst.Parent then return true end
+    local myChar = LocalPlayer.Character
+    if myChar and (inst == myChar or inst:IsDescendantOf(myChar)) then return true end
+    local n = inst.Name:lower()
+    for _, k in ipairs(PROTECT_KWS) do if n:find(k,1,true) then return true end end
+    if inst:FindFirstChildWhichIsA("ProximityPrompt", false) then return true end
+    if inst:FindFirstChildWhichIsA("ClickDetector", false) then return true end
+    return false
+end
+
+-- ═══════════════════════════════════════════════
+-- FIX LAG — port từ Utility Menu v6.3
+-- Mode nhẹ: tắt FX, giảm quality, GIỮ màu gốc
+-- ═══════════════════════════════════════════════
+local FX_KILL = {
+    "ParticleEmitter","Trail","Beam","Smoke","Fire","Sparkles",
+    "PointLight","SpotLight","SurfaceLight",
+    "BloomEffect","BlurEffect","SunRaysEffect","ColorCorrectionEffect",
+    "DepthOfFieldEffect","Highlight","SelectionBox","SelectionSphere",
+    "Explosion","Decal","Texture","SurfaceAppearance",
+}
+
+local FixLag = {
+    enabled=false, saved={}, hidden={}, conns={},
+    lightingSaved=nil, heartbeat=nil, throttle=0, terrainSaved=nil,
+}
+
+local function fxRemember(tbl, inst, prop, newVal)
+    if not inst.Parent then return end
+    local e = tbl.saved[inst]
+    if not e then e={}; tbl.saved[inst]=e end
+    if e[prop]==nil then e[prop]=inst[prop] end
+    pcall(function() inst[prop]=newVal end)
+end
+
+function FixLag:_process(inst)
+    if not inst or not inst.Parent then return end
+    if isProtected(inst) then return end
+    for _, cls in ipairs(FX_KILL) do
+        if inst:IsA(cls) then
+            if cls=="SurfaceAppearance" then
+                if not self.hidden[inst] then
+                    self.hidden[inst]=inst.Parent; inst.Parent=nil
+                end
+            elseif cls=="Decal" or cls=="Texture" then
+                fxRemember(self, inst, "Transparency", 1)
+            else
+                fxRemember(self, inst, "Enabled", false)
+            end
+            return
+        end
+    end
+    if inst:IsA("Atmosphere") then
+        fxRemember(self, inst, "Enabled", false)
+        fxRemember(self, inst, "Density", 0)
+        return
+    end
+    if inst:IsA("Clouds") then
+        fxRemember(self, inst, "Enabled", false)
+        fxRemember(self, inst, "Cover", 0)
+        return
+    end
+    if inst:IsA("BasePart") then
+        fxRemember(self, inst, "CastShadow", false)
+        fxRemember(self, inst, "Material", Enum.Material.SmoothPlastic)
+        if inst:IsA("MeshPart") then
+            fxRemember(self, inst, "TextureID", "")
+            fxRemember(self, inst, "RenderFidelity", Enum.RenderFidelity.Performance)
+        end
+    end
+    if inst:IsA("Sound") then fxRemember(self, inst, "Volume", 0) end
+    if inst:IsA("Humanoid") then
+        fxRemember(self, inst, "DisplayDistanceType", Enum.HumanoidDisplayDistanceType.None)
+    end
+end
+
+function FixLag:_applyTo(container)
+    if not container then return end
+    for _, d in ipairs(container:GetDescendants()) do self:_process(d) end
+end
+
+function FixLag:start()
+    if self.enabled then return end
+    self.enabled=true; self.saved={}; self.hidden={}
+    self:_applyTo(workspace)
+    self:_applyTo(Lighting)
+    if workspace.Terrain then
+        self.terrainSaved = {
+            Decoration        = workspace.Terrain.Decoration,
+            WaterWaveSize     = workspace.Terrain.WaterWaveSize,
+            WaterTransparency = workspace.Terrain.WaterTransparency,
+            WaterReflectance  = workspace.Terrain.WaterReflectance,
+        }
+        workspace.Terrain.Decoration=false
+        workspace.Terrain.WaterWaveSize=0
+        workspace.Terrain.WaterTransparency=0.5
+        workspace.Terrain.WaterReflectance=0
+    end
+    self.lightingSaved = {
+        GlobalShadows             = Lighting.GlobalShadows,
+        EnvironmentDiffuseScale   = Lighting.EnvironmentDiffuseScale,
+        EnvironmentSpecularScale  = Lighting.EnvironmentSpecularScale,
+        ShadowSoftness            = Lighting.ShadowSoftness,
+    }
+    Lighting.GlobalShadows=false
+    Lighting.EnvironmentDiffuseScale=0
+    Lighting.EnvironmentSpecularScale=0
+    Lighting.ShadowSoftness=0
+    pcall(function()
+        UserSettings():GetService("UserGameSettings").SavedQualityLevel =
+            Enum.SavedQualitySetting.QualityLevel1
+    end)
+    self.heartbeat = RunService.Heartbeat:Connect(function()
+        if not self.enabled then return end
+        self.throttle+=1
+        if self.throttle<60 then return end
+        self.throttle=0
+        self:_applyTo(workspace)
+    end)
+    table.insert(self.conns, workspace.DescendantAdded:Connect(function(d)
+        if self.enabled then self:_process(d) end
+    end))
+    table.insert(self.conns, Lighting.DescendantAdded:Connect(function(d)
+        if self.enabled then self:_process(d) end
+    end))
+end
+
+function FixLag:stop()
+    if not self.enabled then return end
+    self.enabled=false
+    if self.heartbeat then self.heartbeat:Disconnect(); self.heartbeat=nil end
+    for inst, props in pairs(self.saved) do
+        if inst and inst.Parent then
+            for prop, val in pairs(props) do pcall(function() inst[prop]=val end) end
+        end
+    end
+    self.saved={}
+    for inst, parent in pairs(self.hidden) do
+        if inst and parent then pcall(function() inst.Parent=parent end) end
+    end
+    self.hidden={}
+    if self.terrainSaved and workspace.Terrain then
+        workspace.Terrain.Decoration        = self.terrainSaved.Decoration
+        workspace.Terrain.WaterWaveSize     = self.terrainSaved.WaterWaveSize
+        workspace.Terrain.WaterTransparency = self.terrainSaved.WaterTransparency
+        workspace.Terrain.WaterReflectance  = self.terrainSaved.WaterReflectance
+        self.terrainSaved=nil
+    end
+    if self.lightingSaved then
+        for k,v in pairs(self.lightingSaved) do pcall(function() Lighting[k]=v end) end
+        self.lightingSaved=nil
+    end
+    pcall(function()
+        UserSettings():GetService("UserGameSettings").SavedQualityLevel =
+            Enum.SavedQualitySetting.Automatic
+    end)
+    for _, c in ipairs(self.conns) do c:Disconnect() end
+    self.conns={}
+end
+
+-- ═══════════════════════════════════════════════
+-- FIX LAG FARM — port từ Utility Menu v6.3
+-- Mode siêu mạnh: mọi thứ xám đơn sắc
+-- ═══════════════════════════════════════════════
+local FARM_GRAY = Color3.fromRGB(110,110,110)
+local FARM_FX = {
+    "ParticleEmitter","Trail","Beam","Smoke","Fire","Sparkles",
+    "PointLight","SpotLight","SurfaceLight",
+    "BloomEffect","BlurEffect","SunRaysEffect","ColorCorrectionEffect",
+    "DepthOfFieldEffect","Highlight","SelectionBox","SelectionSphere",
+    "Explosion","Decal","Texture","SurfaceAppearance","SurfaceGui","BillboardGui",
+}
+
+local FarmClean = {
+    enabled=false, saved={}, hidden={},
+    hiddenSky=nil, hiddenClouds=nil, hiddenAtmosphere=nil,
+    conns={}, lightingSaved=nil, heartbeat=nil, throttle=0, terrainSaved=nil,
+}
+
+local function farmRemember(tbl, inst, prop, newVal)
+    if not inst.Parent then return end
+    local e = tbl.saved[inst]
+    if not e then e={}; tbl.saved[inst]=e end
+    if e[prop]==nil then e[prop]=inst[prop] end
+    pcall(function() inst[prop]=newVal end)
+end
+
+function FarmClean:_process(inst)
+    if not inst or not inst.Parent then return end
+    if isProtected(inst) then return end
+
+    -- Ẩn Sky/Clouds/Atmosphere -> trời thành 1 khối xanh
+    if inst:IsA("Sky") then
+        if not self.hiddenSky then
+            self.hiddenSky={inst=inst,parent=inst.Parent}; inst.Parent=nil
+        end; return
+    end
+    if inst:IsA("Clouds") then
+        if not self.hiddenClouds then
+            self.hiddenClouds={inst=inst,parent=inst.Parent}; inst.Parent=nil
+        end; return
+    end
+    if inst:IsA("Atmosphere") then
+        if not self.hiddenAtmosphere then
+            self.hiddenAtmosphere={inst=inst,parent=inst.Parent}; inst.Parent=nil
+        end; return
+    end
+
+    for _, cls in ipairs(FARM_FX) do
+        if inst:IsA(cls) then
+            if cls=="SurfaceAppearance" then
+                if not self.hidden[inst] then
+                    self.hidden[inst]=inst.Parent; inst.Parent=nil
+                end
+            elseif cls=="SurfaceGui" then
+                if inst:IsDescendantOf(workspace) then
+                    farmRemember(self,inst,"Enabled",false)
+                end
+            elseif cls=="BillboardGui" then
+                farmRemember(self,inst,"Enabled",false)
+            elseif cls=="Decal" or cls=="Texture" then
+                farmRemember(self,inst,"Transparency",1)
+            else
+                farmRemember(self,inst,"Enabled",false)
+            end
+            return
+        end
+    end
+
+    -- Mọi BasePart -> XÁM phẳng
+    if inst:IsA("BasePart") then
+        farmRemember(self,inst,"Color",FARM_GRAY)
+        farmRemember(self,inst,"Material",Enum.Material.SmoothPlastic)
+        farmRemember(self,inst,"CastShadow",false)
+        farmRemember(self,inst,"Reflectance",0)
+        if inst:IsA("MeshPart") then
+            farmRemember(self,inst,"TextureID","")
+            farmRemember(self,inst,"RenderFidelity",Enum.RenderFidelity.Performance)
+        end
+        return
+    end
+
+    if inst:IsA("Accessory") or inst:IsA("Hat") then
+        local h = inst:FindFirstChild("Handle")
+        if h then
+            farmRemember(self,h,"Transparency",1)
+            farmRemember(self,h,"LocalTransparencyModifier",1)
+        end
+        return
+    end
+    if inst:IsA("Sound") then farmRemember(self,inst,"Volume",0) return end
+    if inst:IsA("Humanoid") then
+        farmRemember(self,inst,"DisplayDistanceType",Enum.HumanoidDisplayDistanceType.None)
+    end
+end
+
+function FarmClean:_applyTo(container)
+    if not container then return end
+    for _, d in ipairs(container:GetDescendants()) do self:_process(d) end
+end
+
+function FarmClean:start()
+    if self.enabled then return end
+    self.enabled=true; self.saved={}; self.hidden={}
+    self:_applyTo(workspace)
+    self:_applyTo(Lighting)
+    -- Nước biển = xanh đặc, không sóng
+    if workspace.Terrain then
+        self.terrainSaved = {
+            WaterColor        = workspace.Terrain.WaterColor,
+            Decoration        = workspace.Terrain.Decoration,
+            WaterWaveSize     = workspace.Terrain.WaterWaveSize,
+            WaterTransparency = workspace.Terrain.WaterTransparency,
+            WaterReflectance  = workspace.Terrain.WaterReflectance,
+        }
+        workspace.Terrain.WaterColor        = Color3.fromRGB(30,100,160)
+        workspace.Terrain.Decoration        = false
+        workspace.Terrain.WaterWaveSize     = 0
+        workspace.Terrain.WaterTransparency = 0
+        workspace.Terrain.WaterReflectance  = 0
+    end
+    self.lightingSaved = {
+        GlobalShadows            = Lighting.GlobalShadows,
+        EnvironmentDiffuseScale  = Lighting.EnvironmentDiffuseScale,
+        EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale,
+        ShadowSoftness           = Lighting.ShadowSoftness,
+        Ambient                  = Lighting.Ambient,
+        OutdoorAmbient           = Lighting.OutdoorAmbient,
+    }
+    Lighting.GlobalShadows=false
+    Lighting.EnvironmentDiffuseScale=0
+    Lighting.EnvironmentSpecularScale=0
+    Lighting.ShadowSoftness=0
+    Lighting.Ambient=Color3.fromRGB(180,180,180)
+    Lighting.OutdoorAmbient=Color3.fromRGB(180,180,180)
+    pcall(function()
+        UserSettings():GetService("UserGameSettings").SavedQualityLevel =
+            Enum.SavedQualitySetting.QualityLevel1
+    end)
+    self.heartbeat = RunService.Heartbeat:Connect(function()
+        if not self.enabled then return end
+        self.throttle+=1
+        if self.throttle<60 then return end
+        self.throttle=0
+        self:_applyTo(workspace)
+    end)
+    table.insert(self.conns, workspace.DescendantAdded:Connect(function(d)
+        if self.enabled then self:_process(d) end
+    end))
+end
+
+function FarmClean:stop()
+    if not self.enabled then return end
+    self.enabled=false
+    if self.heartbeat then self.heartbeat:Disconnect(); self.heartbeat=nil end
+    -- Restore Sky/Clouds/Atmosphere
+    if self.hiddenSky and self.hiddenSky.inst then
+        pcall(function() self.hiddenSky.inst.Parent=self.hiddenSky.parent end)
+        self.hiddenSky=nil
+    end
+    if self.hiddenClouds and self.hiddenClouds.inst then
+        pcall(function() self.hiddenClouds.inst.Parent=self.hiddenClouds.parent end)
+        self.hiddenClouds=nil
+    end
+    if self.hiddenAtmosphere and self.hiddenAtmosphere.inst then
+        pcall(function() self.hiddenAtmosphere.inst.Parent=self.hiddenAtmosphere.parent end)
+        self.hiddenAtmosphere=nil
+    end
+    for inst, props in pairs(self.saved) do
+        if inst and inst.Parent then
+            for prop, val in pairs(props) do pcall(function() inst[prop]=val end) end
+        end
+    end
+    self.saved={}
+    for inst, parent in pairs(self.hidden) do
+        if inst and parent then pcall(function() inst.Parent=parent end) end
+    end
+    self.hidden={}
+    if self.terrainSaved and workspace.Terrain then
+        for k,v in pairs(self.terrainSaved) do
+            pcall(function() workspace.Terrain[k]=v end)
+        end
+        self.terrainSaved=nil
+    end
+    if self.lightingSaved then
+        for k,v in pairs(self.lightingSaved) do pcall(function() Lighting[k]=v end) end
+        self.lightingSaved=nil
+    end
+    pcall(function()
+        UserSettings():GetService("UserGameSettings").SavedQualityLevel =
+            Enum.SavedQualitySetting.Automatic
+    end)
+    for _, c in ipairs(self.conns) do c:Disconnect() end
+    self.conns={}
+end
+
+-- ═══════════════════════════════════════════════
+-- NHÓM 1: DI CHUYỂN
+-- ═══════════════════════════════════════════════
+RunService.Heartbeat:Connect(function()
+    if CONFIG.SpeedHack and humanoid then humanoid.WalkSpeed=CONFIG.SpeedValue end
+    if CONFIG.JumpHack and humanoid then humanoid.JumpPower=CONFIG.JumpValue end
+    if CONFIG.AntiFling and hrp and hrp.AssemblyLinearVelocity.Magnitude>100 then
+        hrp.AssemblyLinearVelocity=Vector3.zero
+    end
+    if CONFIG.AntiVoid and hrp and hrp.Position.Y<-100 then
+        hrp.CFrame=CFrame.new(hrp.Position.X,50,hrp.Position.Z)
+    end
+    if CONFIG.GodMode and humanoid then humanoid.Health=humanoid.MaxHealth end
+end)
+
+local flyActive=false
+local function enableFly()
+    if flyActive then return end; flyActive=true
+    local bv=Instance.new("BodyVelocity"); bv.Velocity=Vector3.zero
+    bv.MaxForce=Vector3.new(1e5,1e5,1e5); bv.Parent=hrp
+    local bg=Instance.new("BodyGyro"); bg.MaxTorque=Vector3.new(1e5,1e5,1e5)
+    bg.D=50; bg.Parent=hrp
+    RunService:BindToRenderStep("FlyHack",1,function()
+        if not CONFIG.FlyHack then
+            bv:Destroy(); bg:Destroy(); flyActive=false
+            RunService:UnbindFromRenderStep("FlyHack"); return
+        end
+        local dir=Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir=dir+Camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir=dir-Camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir=dir-Camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir=dir+Camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir=dir+Vector3.new(0,1,0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir=dir-Vector3.new(0,1,0) end
+        bv.Velocity=dir.Magnitude>0 and dir.Unit*50 or Vector3.zero
+        bg.CFrame=Camera.CFrame
+    end)
+end
+
+RunService.Stepped:Connect(function()
+    if CONFIG.Noclip and character then
+        for _,p in pairs(character:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide=false end
+        end
+    end
+end)
+
+UserInputService.JumpRequest:Connect(function()
+    if CONFIG.InfiniteJump and humanoid then
+        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end)
+
+spawn(function()
+    while true do
+        if CONFIG.AutoWalk and hrp then
+            local t=Vector3.new(CONFIG.AutoWalkX,CONFIG.AutoWalkY,CONFIG.AutoWalkZ)
+            if (hrp.Position-t).Magnitude>3 then hrp.CFrame=hrp.CFrame:Lerp(CFrame.new(t),0.1) end
+        end
+        task.wait(0.05)
+    end
+end)
+
+-- ═══════════════════════════════════════════════
+-- NHÓM 2: COMBAT
+-- ═══════════════════════════════════════════════
+local function getClosestEnemy()
+    local closest, minDist=nil, math.huge
+    for _,p in pairs(Players:GetPlayers()) do
+        if p~=LocalPlayer and p.Character then
+            local eR=p.Character:FindFirstChild("HumanoidRootPart")
+            local eH=p.Character:FindFirstChild("Humanoid")
+            if eR and eH and eH.Health>0 then
+                local d=(Camera.CFrame.Position-eR.Position).Magnitude
+                if d<minDist then minDist=d; closest=p.Character end
+            end
+        end
+    end
+    return closest
+end
+
+RunService.RenderStepped:Connect(function()
+    if CONFIG.Aimbot then
+        local t=getClosestEnemy()
+        if t then
+            local part=t:FindFirstChild(CONFIG.AimbotPart) or t:FindFirstChild("HumanoidRootPart")
+            if part then Camera.CFrame=CFrame.new(Camera.CFrame.Position,part.Position) end
+        end
+    end
+end)
+
+local ESPFolder=Instance.new("Folder"); ESPFolder.Name="ESP"; ESPFolder.Parent=game.CoreGui
+local function createESP(player)
+    if player==LocalPlayer then return end
+    local bb=Instance.new("BillboardGui"); bb.Name="ESP_"..player.Name
+    bb.AlwaysOnTop=true; bb.Size=UDim2.new(0,160,0,56)
+    bb.StudsOffset=Vector3.new(0,3,0); bb.Parent=ESPFolder
+    local nl=Instance.new("TextLabel",bb)
+    nl.Size=UDim2.new(1,0,0.5,0); nl.BackgroundTransparency=1
+    nl.TextColor3=Color3.fromRGB(255,60,60); nl.TextStrokeTransparency=0
+    nl.Font=Enum.Font.GothamBold; nl.TextSize=14
+    local il=Instance.new("TextLabel",bb)
+    il.Size=UDim2.new(1,0,0.5,0); il.Position=UDim2.new(0,0,0.5,0)
+    il.BackgroundTransparency=1; il.TextColor3=Color3.fromRGB(255,230,80)
+    il.TextStrokeTransparency=0; il.Font=Enum.Font.Gotham; il.TextSize=12
+    RunService.RenderStepped:Connect(function()
+        bb.Enabled=CONFIG.ESP
+        if player.Character then
+            local pR=player.Character:FindFirstChild("HumanoidRootPart")
+            local pH=player.Character:FindFirstChild("Humanoid")
+            if pR and pH then
+                bb.Adornee=pR; nl.Text=player.Name
+                il.Text=string.format("HP:%d/%d | %dm",
+                    math.floor(pH.Health),math.floor(pH.MaxHealth),
+                    math.floor((hrp.Position-pR.Position).Magnitude))
+            end
+        end
+    end)
+end
+for _,p in pairs(Players:GetPlayers()) do createESP(p) end
+Players.PlayerAdded:Connect(createESP)
+Players.PlayerRemoving:Connect(function(p)
+    local e=ESPFolder:FindFirstChild("ESP_"..p.Name); if e then e:Destroy() end
+end)
+
+RunService.RenderStepped:Connect(function()
+    for _,p in pairs(Players:GetPlayers()) do
+        if p~=LocalPlayer and p.Character then
+            local hl=p.Character:FindFirstChild("WH_HL")
+            if CONFIG.Wallhack and not hl then
+                local h=Instance.new("Highlight",p.Character); h.Name="WH_HL"
+                h.FillColor=Color3.fromRGB(255,0,0); h.OutlineColor=Color3.fromRGB(255,255,255)
+                h.FillTransparency=0.5; h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+            elseif not CONFIG.Wallhack and hl then hl:Destroy() end
+        end
+    end
+end)
+
+spawn(function()
+    while true do
+        if CONFIG.AutoKill or CONFIG.AutoAttack then
+            local t=getClosestEnemy()
+            if t then
+                local tool=character:FindFirstChildOfClass("Tool")
+                if tool then tool:Activate() end
+                for _,r in pairs(game.ReplicatedStorage:GetDescendants()) do
+                    if r:IsA("RemoteEvent") then
+                        local n=r.Name:lower()
+                        if n:find("attack") or n:find("damage") or n:find("hit") then
+                            pcall(function() r:FireServer(t) end)
+                        end
+                    end
+                end
+            end
+        end
+        task.wait(0.15)
+    end
+end)
+
+spawn(function()
+    while true do
+        if CONFIG.AutoHeal and humanoid then
+            if humanoid.Health/humanoid.MaxHealth*100 < CONFIG.HealThreshold then
+                for _,item in pairs(character:GetChildren()) do
+                    if item:IsA("Tool") then
+                        local n=item.Name:lower()
+                        if n:find("heal") or n:find("potion") then item:Activate() end
+                    end
+                end
+                fireByKW("heal")
+            end
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- ═══════════════════════════════════════════════
+-- NHÓM 3: FARM + EXP
+-- ═══════════════════════════════════════════════
+local function collectAllLoot()
+    for _,obj in pairs(workspace:GetDescendants()) do
+        local name=obj.Name:lower()
+        local ok=name:find("exp") or name:find("xp") or name:find("drop")
+            or name:find("loot") or name:find("coin") or name:find("gold")
+            or name:find("orb") or name:find("soul") or name:find("gem")
+        if ok then
+            if obj:IsA("BasePart") then
+                local d=(obj.Position-hrp.Position).Magnitude
+                if d<CONFIG.DROP_RANGE then
+                    local sv=hrp.CFrame
+                    hrp.CFrame=CFrame.new(obj.Position)
+                    task.wait(0.04); hrp.CFrame=sv
+                end
+            end
+            if obj:IsA("RemoteEvent") then pcall(function() obj:FireServer() end) end
+        end
+    end
+    for _,r in pairs(game.ReplicatedStorage:GetDescendants()) do
+        if r:IsA("RemoteEvent") then
+            local n=r.Name:lower()
+            if n:find("collect") or n:find("pickup") or n:find("exp")
+            or n:find("reward") or n:find("claim") then
+                pcall(function() r:FireServer() end)
+            end
+        end
+    end
+end
+
+spawn(function() while true do if CONFIG.AutoEXP then collectAllLoot() end task.wait(0.4) end end)
+
+local function attackMonster(monster)
+    if not monster then return end
+    local mH=monster:FindFirstChild("Humanoid"); if not mH then return end
+    local tool=character:FindFirstChildOfClass("Tool"); if tool then tool:Activate() end
+    for _,r in pairs(game.ReplicatedStorage:GetDescendants()) do
+        if r:IsA("RemoteEvent") then
+            local n=r.Name:lower()
+            if n:find("attack") or n:find("damage") or n:find("hit") then
+                pcall(function() r:FireServer(monster) end)
+            end
+        end
+    end
+    pcall(function() if mH.Health>0 then mH.Health=0 end end)
+end
+
+local function waitCollect()
+    task.wait(0.3); collectAllLoot(); task.wait(0.2); collectAllLoot()
+end
+
+spawn(function()
+    while true do
+        if CONFIG.FarmQuaiBay then
+            local m=findNearestMonster()
+            if m then
+                local mR=m:FindFirstChild("HumanoidRootPart")
+                local mH=m:FindFirstChild("Humanoid")
+                if mR and mH then
+                    teleportTo(mR.Position+Vector3.new(0,CONFIG.FLY_HEIGHT,0))
+                    task.wait(0.2)
+                    local i=0
+                    while mH and mH.Health>0 and CONFIG.FarmQuaiBay and i<200 do
+                        local fp=mR.Position+Vector3.new(0,CONFIG.FLY_HEIGHT,0)
+                        if (fp-hrp.Position).Magnitude>CONFIG.ATTACK_RANGE then teleportTo(fp) end
+                        attackMonster(m); task.wait(0.08); i+=1
+                    end
+                    waitCollect()
+                end
+            else task.wait(0.8) end
+        else task.wait(0.3) end
+    end
+end)
+
+spawn(function()
+    while true do
+        if CONFIG.FarmQuai then
+            local m=findNearestMonster()
+            if m then
+                local mR=m:FindFirstChild("HumanoidRootPart")
+                local mH=m:FindFirstChild("Humanoid")
+                if mR and mH then
+                    teleportTo(mR.Position+Vector3.new(0,2,0)); task.wait(0.1)
+                    local i=0
+                    while mH and mH.Health>0 and CONFIG.FarmQuai and i<200 do
+                        attackMonster(m); task.wait(0.08); i+=1
+                    end
+                    waitCollect()
+                end
+            else task.wait(0.8) end
+        else task.wait(0.3) end
+    end
+end)
+
+spawn(function()
+    while true do
+        if CONFIG.AutoBoss then
+            for _,obj in pairs(workspace:GetDescendants()) do
+                if obj:IsA("Model") and obj.Name:lower():find("boss") then
+                    local bR=obj:FindFirstChild("HumanoidRootPart")
+                    local bH=obj:FindFirstChild("Humanoid")
+                    if bR and bH and bH.Health>0 then
+                        teleportTo(bR.Position+Vector3.new(0,CONFIG.FLY_HEIGHT,0))
+                        attackMonster(obj); task.wait(0.1)
+                    end
+                end
+            end
+        end
+        task.wait(0.2)
+    end
+end)
+
+spawn(function()
+    while true do
+        if CONFIG.AutoClick then pcall(mouse1click) end
+        task.wait(0.05)
+    end
+end)
+spawn(function()
+    while true do
+        if CONFIG.AutoFarm then fireByKW("farm") end
+        if CONFIG.AutoSell then fireByKW("sell") end
+        if CONFIG.AutoDaily then fireByKW("daily") end
+        if CONFIG.AutoRebirth then fireByKW("rebirth") end
+        if CONFIG.AutoUpgrade then fireByKW("upgrade") end
+        if CONFIG.AutoPet then fireByKW("pet") end
+        if CONFIG.AutoDungeon then fireByKW("dungeon") end
+        task.wait(2)
+    end
+end)
+spawn(function()
+    while true do
+        if CONFIG.AutoNhanQuest or CONFIG.AutoDailyQuest then fireByKW("quest") end
+        if CONFIG.AutoTraQuest then fireByKW("submit") end
+        if CONFIG.AutoNhanThuong then fireByKW("reward") end
+        if CONFIG.AutoChainQuest then
+            fireByKW("quest"); task.wait(0.5)
+            fireByKW("complete"); task.wait(0.5)
+            fireByKW("reward")
+        end
+        task.wait(3)
+    end
+end)
+
+if hookmetamethod then
+    local oldNC
+    oldNC=hookmetamethod(game,"__namecall",function(self,...)
+        if (CONFIG.AntiBan or CONFIG.AntiKick) and getnamecallmethod()=="Kick" then return end
+        return oldNC(self,...)
+    end)
+end
+
+-- FullBright / RemoveFog / RemoveEffects (simple, tidak pakai FixLag system)
+spawn(function()
+    while true do
+        if CONFIG.FullBright then
+            Lighting.Brightness=10; Lighting.ClockTime=14
+            Lighting.GlobalShadows=false
+            Lighting.Ambient=Color3.fromRGB(255,255,255)
+            Lighting.OutdoorAmbient=Color3.fromRGB(255,255,255)
+        end
+        if CONFIG.RemoveFog then Lighting.FogEnd=1e6; Lighting.FogStart=1e6 end
+        if CONFIG.FPSBoost then
+            pcall(function() settings().Rendering.QualityLevel=1 end)
+        end
+        task.wait(1)
+    end
+end)
+
+-- ═══════════════════════════════════════════════
+-- GUI
+-- ═══════════════════════════════════════════════
+local ScreenGui=Instance.new("ScreenGui")
+ScreenGui.Name="UC_v33"; ScreenGui.ResetOnSpawn=false
+ScreenGui.IgnoreGuiInset=true; ScreenGui.ZIndexBehavior=Enum.ZIndexBehavior.Global
+ScreenGui.Parent=(gethui and gethui()) or game:GetService("CoreGui")
+
+local MainFrame=Instance.new("Frame")
+MainFrame.Size=UDim2.new(0,490,0,600)
+MainFrame.Position=UDim2.new(0.5,-245,0.5,-300)
+MainFrame.BackgroundColor3=Color3.fromRGB(14,14,22)
+MainFrame.BorderSizePixel=0; MainFrame.ZIndex=10
+MainFrame.Parent=ScreenGui
+Instance.new("UICorner",MainFrame).CornerRadius=UDim.new(0,12)
+
+local TitleBar=Instance.new("Frame",MainFrame)
+TitleBar.Size=UDim2.new(1,0,0,44); TitleBar.BackgroundColor3=Color3.fromRGB(22,22,38)
+TitleBar.BorderSizePixel=0; TitleBar.ZIndex=11
+Instance.new("UICorner",TitleBar).CornerRadius=UDim.new(0,12)
+local fix=Instance.new("Frame",TitleBar)
+fix.Size=UDim2.new(1,0,0.5,0); fix.Position=UDim2.new(0,0,0.5,0)
+fix.BackgroundColor3=Color3.fromRGB(22,22,38); fix.BorderSizePixel=0; fix.ZIndex=11
+
+local TitleLbl=Instance.new("TextLabel",TitleBar)
+TitleLbl.Size=UDim2.new(1,-50,1,0); TitleLbl.Position=UDim2.new(0,12,0,0)
+TitleLbl.BackgroundTransparency=1; TitleLbl.Text="⚡ Universal Cheat v3.3"
+TitleLbl.TextColor3=Color3.fromRGB(160,90,255); TitleLbl.Font=Enum.Font.GothamBold
+TitleLbl.TextSize=14; TitleLbl.TextXAlignment=Enum.TextXAlignment.Left; TitleLbl.ZIndex=12
+
+local CloseBtn=Instance.new("TextButton",TitleBar)
+CloseBtn.Size=UDim2.new(0,38,0,30); CloseBtn.Position=UDim2.new(1,-44,0.5,-15)
+CloseBtn.BackgroundColor3=Color3.fromRGB(200,45,45); CloseBtn.Text="✕"
+CloseBtn.TextColor3=Color3.new(1,1,1); CloseBtn.Font=Enum.Font.GothamBold
+CloseBtn.TextSize=14; CloseBtn.BorderSizePixel=0; CloseBtn.ZIndex=15
+Instance.new("UICorner",CloseBtn).CornerRadius=UDim.new(0,6)
+local function doClose() MainFrame.Visible=false end
+CloseBtn.MouseButton1Click:Connect(doClose); CloseBtn.TouchTap:Connect(doClose)
+
+local dragOn,dragStart,dragOrigin
+TitleBar.InputBegan:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+        dragOn=true; dragStart=i.Position; dragOrigin=MainFrame.Position
+    end
+end)
+TitleBar.InputEnded:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+        dragOn=false
+    end
+end)
+UserInputService.InputChanged:Connect(function(i)
+    if dragOn and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+        local d=i.Position-dragStart
+        MainFrame.Position=UDim2.new(dragOrigin.X.Scale,dragOrigin.X.Offset+d.X,dragOrigin.Y.Scale,dragOrigin.Y.Offset+d.Y)
+    end
+end)
+
+local TabBar=Instance.new("Frame",MainFrame)
+TabBar.Size=UDim2.new(1,0,0,36); TabBar.Position=UDim2.new(0,0,0,44)
+TabBar.BackgroundColor3=Color3.fromRGB(18,18,30); TabBar.BorderSizePixel=0; TabBar.ZIndex=11
+Instance.new("UIListLayout",TabBar).FillDirection=Enum.FillDirection.Horizontal
+
+local ContentArea=Instance.new("Frame",MainFrame)
+ContentArea.Size=UDim2.new(1,0,1,-80); ContentArea.Position=UDim2.new(0,0,0,80)
+ContentArea.BackgroundTransparency=1; ContentArea.ClipsDescendants=true; ContentArea.ZIndex=10
+
+local tabPages,tabBtns={},{}
+local tabDefs={
+    {name="Move",   color=Color3.fromRGB(80,190,255)},
+    {name="Combat", color=Color3.fromRGB(255,85,85)},
+    {name="Farm",   color=Color3.fromRGB(80,225,130)},
+    {name="Quest",  color=Color3.fromRGB(255,195,75)},
+    {name="Protect",color=Color3.fromRGB(180,80,255)},
+    {name="Util",   color=Color3.fromRGB(80,235,235)},
+    {name="Info",   color=Color3.fromRGB(255,255,100)},
+}
+
+local function makeScrollPage()
+    local s=Instance.new("ScrollingFrame",ContentArea)
+    s.Size=UDim2.new(1,0,1,0); s.BackgroundTransparency=1
+    s.ScrollBarThickness=4; s.ScrollBarImageColor3=Color3.fromRGB(120,70,220)
+    s.BorderSizePixel=0; s.Visible=false; s.ZIndex=11; s.CanvasSize=UDim2.new(0,0,0,0)
+    local ll=Instance.new("UIListLayout",s)
+    ll.Padding=UDim.new(0,6); ll.SortOrder=Enum.SortOrder.LayoutOrder
+    local pp=Instance.new("UIPadding",s)
+    pp.PaddingLeft=UDim.new(0,10); pp.PaddingRight=UDim.new(0,10); pp.PaddingTop=UDim.new(0,8)
+    ll:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        s.CanvasSize=UDim2.new(0,0,0,ll.AbsoluteContentSize.Y+20)
+    end)
+    return s
+end
+
+local function switchTab(idx)
+    for j,p in ipairs(tabPages) do
+        p.Visible=false
+        tabBtns[j].TextColor3=Color3.fromRGB(150,150,150)
+        tabBtns[j].BackgroundColor3=Color3.fromRGB(18,18,30)
+    end
+    tabPages[idx].Visible=true
+    tabBtns[idx].TextColor3=tabDefs[idx].color
+    tabBtns[idx].BackgroundColor3=Color3.fromRGB(28,28,48)
+end
+
+for i,def in ipairs(tabDefs) do
+    local btn=Instance.new("TextButton",TabBar)
+    btn.Size=UDim2.new(0,math.floor(490/7),1,0)
+    btn.BackgroundColor3=Color3.fromRGB(18,18,30); btn.Text=def.name
+    btn.TextColor3=Color3.fromRGB(150,150,150); btn.Font=Enum.Font.GothamBold
+    btn.TextSize=10; btn.BorderSizePixel=0; btn.LayoutOrder=i; btn.ZIndex=13
+    tabBtns[i]=btn
+    local page=makeScrollPage(); tabPages[i]=page
+    btn.MouseButton1Click:Connect(function() switchTab(i) end)
+    btn.TouchTap:Connect(function() switchTab(i) end)
+end
+switchTab(1)
+
+local function createToggle(parent,label,cfgKey,color,onCallback,offCallback)
+    color=color or Color3.fromRGB(70,200,70)
+    local row=Instance.new("Frame",parent)
+    row.Size=UDim2.new(1,0,0,40); row.BackgroundColor3=Color3.fromRGB(20,20,34)
+    row.BorderSizePixel=0; row.ZIndex=12
+    Instance.new("UICorner",row).CornerRadius=UDim.new(0,8)
+    local lbl=Instance.new("TextLabel",row)
+    lbl.Size=UDim2.new(0.72,0,1,0); lbl.Position=UDim2.new(0,10,0,0)
+    lbl.BackgroundTransparency=1; lbl.Text=label; lbl.TextColor3=Color3.fromRGB(210,210,210)
+    lbl.Font=Enum.Font.Gotham; lbl.TextSize=13
+    lbl.TextXAlignment=Enum.TextXAlignment.Left; lbl.ZIndex=13
+    local tog=Instance.new("TextButton",row)
+    tog.Size=UDim2.new(0,56,0,28); tog.Position=UDim2.new(1,-64,0.5,-14)
+    tog.BackgroundColor3=CONFIG[cfgKey] and color or Color3.fromRGB(65,65,65)
+    tog.Text=CONFIG[cfgKey] and "ON" or "OFF"
+    tog.TextColor3=Color3.new(1,1,1); tog.Font=Enum.Font.GothamBold
+    tog.TextSize=11; tog.BorderSizePixel=0; tog.ZIndex=14
+    Instance.new("UICorner",tog).CornerRadius=UDim.new(1,0)
+    local function doToggle()
+        CONFIG[cfgKey]=not CONFIG[cfgKey]
+        tog.Text=CONFIG[cfgKey] and "ON" or "OFF"
+        tog.BackgroundColor3=CONFIG[cfgKey] and color or Color3.fromRGB(65,65,65)
+        if cfgKey=="FlyHack" and CONFIG.FlyHack then enableFly() end
+        if CONFIG[cfgKey] and onCallback then onCallback() end
+        if not CONFIG[cfgKey] and offCallback then offCallback() end
+        saveConfig()
+    end
+    tog.MouseButton1Click:Connect(doToggle); tog.TouchTap:Connect(doToggle)
+    return row
+end
+
+local function createSlider(parent,label,cfgKey,minV,maxV,color)
+    color=color or Color3.fromRGB(100,140,255)
+    local row=Instance.new("Frame",parent)
+    row.Size=UDim2.new(1,0,0,60); row.BackgroundColor3=Color3.fromRGB(20,20,34)
+    row.BorderSizePixel=0; row.ZIndex=12
+    Instance.new("UICorner",row).CornerRadius=UDim.new(0,8)
+    local lbl=Instance.new("TextLabel",row)
+    lbl.Size=UDim2.new(1,-10,0,26); lbl.Position=UDim2.new(0,10,0,4)
+    lbl.BackgroundTransparency=1; lbl.Text=label..": "..tostring(CONFIG[cfgKey])
+    lbl.TextColor3=Color3.fromRGB(210,210,210); lbl.Font=Enum.Font.Gotham
+    lbl.TextSize=13; lbl.TextXAlignment=Enum.TextXAlignment.Left; lbl.ZIndex=13
+    local track=Instance.new("Frame",row)
+    track.Size=UDim2.new(1,-20,0,8); track.Position=UDim2.new(0,10,0,42)
+    track.BackgroundColor3=Color3.fromRGB(50,50,70); track.BorderSizePixel=0; track.ZIndex=13
+    Instance.new("UICorner",track).CornerRadius=UDim.new(1,0)
+    local pct=math.clamp((CONFIG[cfgKey]-minV)/(maxV-minV),0,1)
+    local fill=Instance.new("Frame",track)
+    fill.Size=UDim2.new(pct,0,1,0); fill.BackgroundColor3=color
+    fill.BorderSizePixel=0; fill.ZIndex=14
+    Instance.new("UICorner",fill).CornerRadius=UDim.new(1,0)
+    local handle=Instance.new("TextButton",track)
+    handle.Size=UDim2.new(0,20,0,20); handle.Position=UDim2.new(pct,-10,0.5,-10)
+    handle.BackgroundColor3=Color3.new(1,1,1); handle.Text=""
+    handle.BorderSizePixel=0; handle.ZIndex=15
+    Instance.new("UICorner",handle).CornerRadius=UDim.new(1,0)
+    local sliding=false
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then sliding=true end
+    end)
+    handle.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then sliding=false end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if sliding and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+            local rx=math.clamp((i.Position.X-track.AbsolutePosition.X)/track.AbsoluteSize.X,0,1)
+            local v=math.floor(minV+rx*(maxV-minV))
+            CONFIG[cfgKey]=v; fill.Size=UDim2.new(rx,0,1,0)
+            handle.Position=UDim2.new(rx,-10,0.5,-10)
+            lbl.Text=label..": "..tostring(v); saveConfig()
+        end
+    end)
+end
+
+-- ═══ POPULATE ═══
+-- Tab 1: Move
+createToggle(tabPages[1],"Speed Hack","SpeedHack",tabDefs[1].color)
+createSlider(tabPages[1],"Speed","SpeedValue",1,500,tabDefs[1].color)
+createToggle(tabPages[1],"Jump Hack","JumpHack",tabDefs[1].color)
+createSlider(tabPages[1],"Jump Power","JumpValue",1,500,tabDefs[1].color)
+createToggle(tabPages[1],"Fly Hack","FlyHack",tabDefs[1].color)
+createToggle(tabPages[1],"Noclip","Noclip",tabDefs[1].color)
+createToggle(tabPages[1],"Infinite Jump","InfiniteJump",tabDefs[1].color)
+createToggle(tabPages[1],"Auto Walk","AutoWalk",tabDefs[1].color)
+
+-- Tab 2: Combat
+createToggle(tabPages[2],"Aimbot","Aimbot",tabDefs[2].color)
+createToggle(tabPages[2],"ESP","ESP",tabDefs[2].color)
+createToggle(tabPages[2],"Wallhack","Wallhack",tabDefs[2].color)
+createToggle(tabPages[2],"Trigger Bot","TriggerBot",tabDefs[2].color)
+createToggle(tabPages[2],"Auto Kill","AutoKill",tabDefs[2].color)
+createToggle(tabPages[2],"Auto Attack","AutoAttack",tabDefs[2].color)
+createToggle(tabPages[2],"Auto Heal","AutoHeal",tabDefs[2].color)
+createSlider(tabPages[2],"Heal Threshold %","HealThreshold",10,90,tabDefs[2].color)
+createToggle(tabPages[2],"Auto Dodge","AutoDodge",tabDefs[2].color)
+
+-- Tab 3: Farm
+createToggle(tabPages[3],"Auto EXP Collect","AutoEXP",Color3.fromRGB(255,230,50))
+createToggle(tabPages[3],"Auto Farm","AutoFarm",tabDefs[3].color)
+createToggle(tabPages[3],"Farm Quái","FarmQuai",tabDefs[3].color)
+createToggle(tabPages[3],"Farm Quái Bay","FarmQuaiBay",tabDefs[3].color)
+createSlider(tabPages[3],"Fly Height","FLY_HEIGHT",5,50,tabDefs[3].color)
+createSlider(tabPages[3],"Attack Range","ATTACK_RANGE",5,100,tabDefs[3].color)
+createToggle(tabPages[3],"Auto Collect","AutoCollect",tabDefs[3].color)
+createToggle(tabPages[3],"Auto Click","AutoClick",tabDefs[3].color)
+createToggle(tabPages[3],"Auto Sell","AutoSell",tabDefs[3].color)
+createToggle(tabPages[3],"Auto Boss","AutoBoss",tabDefs[3].color)
+createToggle(tabPages[3],"Auto Dungeon","AutoDungeon",tabDefs[3].color)
+createToggle(tabPages[3],"Auto Daily","AutoDaily",tabDefs[3].color)
+createToggle(tabPages[3],"Auto Rebirth","AutoRebirth",tabDefs[3].color)
+createToggle(tabPages[3],"Auto Upgrade","AutoUpgrade",tabDefs[3].color)
+createToggle(tabPages[3],"Auto Pet","AutoPet",tabDefs[3].color)
+
+-- Tab 4: Quest
+createToggle(tabPages[4],"Auto Nhận Quest","AutoNhanQuest",tabDefs[4].color)
+createToggle(tabPages[4],"Auto Trả Quest","AutoTraQuest",tabDefs[4].color)
+createToggle(tabPages[4],"Auto Nhận Thưởng","AutoNhanThuong",tabDefs[4].color)
+createToggle(tabPages[4],"Auto Chain Quest","AutoChainQuest",tabDefs[4].color)
+createToggle(tabPages[4],"Auto Daily Quest","AutoDailyQuest",tabDefs[4].color)
+
+-- Tab 5: Protect
+createToggle(tabPages[5],"Anti Ban","AntiBan",tabDefs[5].color)
+createToggle(tabPages[5],"Anti Kick","AntiKick",tabDefs[5].color)
+createToggle(tabPages[5],"Anti Fling","AntiFling",tabDefs[5].color)
+createToggle(tabPages[5],"Anti Void","AntiVoid",tabDefs[5].color)
+createToggle(tabPages[5],"God Mode","GodMode",tabDefs[5].color)
+
+-- Tab 6: Util — Fix Lag loại trừ nhau
+createToggle(tabPages[6],"Fix Lag (giữ màu)","FixLag",tabDefs[6].color,
+    function()
+        -- bật FixLag -> tắt FarmClean nếu đang bật
+        if CONFIG.FixLagFarm then
+            CONFIG.FixLagFarm=false; FarmClean:stop()
+        end
+        FixLag:start()
+    end,
+    function() FixLag:stop() end
+)
+createToggle(tabPages[6],"Fix Lag Farm (xám)","FixLagFarm",Color3.fromRGB(160,160,160),
+    function()
+        -- bật FarmClean -> tắt FixLag nếu đang bật
+        if CONFIG.FixLag then
+            CONFIG.FixLag=false; FixLag:stop()
+        end
+        FarmClean:start()
+    end,
+    function() FarmClean:stop() end
+)
+createToggle(tabPages[6],"FPS Boost","FPSBoost",tabDefs[6].color)
+createToggle(tabPages[6],"Full Bright","FullBright",tabDefs[6].color)
+createToggle(tabPages[6],"Remove Fog","RemoveFog",tabDefs[6].color)
+
+local sBtn=Instance.new("TextButton",tabPages[6])
+sBtn.Size=UDim2.new(1,0,0,40); sBtn.BackgroundColor3=Color3.fromRGB(35,120,35)
+sBtn.Text="💾 Save Config"; sBtn.TextColor3=Color3.new(1,1,1)
+sBtn.Font=Enum.Font.GothamBold; sBtn.TextSize=14; sBtn.BorderSizePixel=0; sBtn.ZIndex=13
+Instance.new("UICorner",sBtn).CornerRadius=UDim.new(0,8)
+sBtn.MouseButton1Click:Connect(saveConfig); sBtn.TouchTap:Connect(saveConfig)
+
+local lBtn=Instance.new("TextButton",tabPages[6])
+lBtn.Size=UDim2.new(1,0,0,40); lBtn.BackgroundColor3=Color3.fromRGB(35,85,185)
+lBtn.Text="📂 Load Config"; lBtn.TextColor3=Color3.new(1,1,1)
+lBtn.Font=Enum.Font.GothamBold; lBtn.TextSize=14; lBtn.BorderSizePixel=0; lBtn.ZIndex=13
+Instance.new("UICorner",lBtn).CornerRadius=UDim.new(0,8)
+lBtn.MouseButton1Click:Connect(loadConfig); lBtn.TouchTap:Connect(loadConfig)
+
+-- Tab 7: Info
+local infoLbl=Instance.new("TextLabel",tabPages[7])
+infoLbl.Size=UDim2.new(1,0,0,260); infoLbl.BackgroundColor3=Color3.fromRGB(16,16,28)
+infoLbl.TextColor3=Color3.fromRGB(200,200,200); infoLbl.Font=Enum.Font.Gotham
+infoLbl.TextSize=12; infoLbl.TextWrapped=true
+infoLbl.TextXAlignment=Enum.TextXAlignment.Left
+infoLbl.TextYAlignment=Enum.TextYAlignment.Top; infoLbl.ZIndex=12
+infoLbl.Text="⚡ Universal Cheat v3.3\n\n"
+    .."✅ Fix Lag: port từ Utility Menu v6.3\n"
+    .."  • Fix Lag → tắt FX, giữ màu gốc\n"
+    .."  • Fix Lag Farm → mọi thứ xám, trời xanh đặc\n"
+    .."  • 2 mode loại trừ nhau\n"
+    .."  • Restore về gốc khi tắt\n\n"
+    .."📌 Keybinds:\n"
+    .."  INSERT — Toggle Menu\n"
+    .."  F1/F2/F3/F4/F5 — Fly/Noclip/ESP/Aimbot/God\n\n"
+    .."📱 Nút ⚡ = tap toggle, kéo di chuyển"
+Instance.new("UICorner",infoLbl).CornerRadius=UDim.new(0,8)
+local ip=Instance.new("UIPadding",infoLbl)
+ip.PaddingLeft=UDim.new(0,10); ip.PaddingTop=UDim.new(0,8)
+
+-- ═══ MOBILE TOGGLE ═══
+local TogBtn=Instance.new("TextButton",ScreenGui)
+TogBtn.Size=UDim2.new(0,54,0,54); TogBtn.Position=UDim2.new(0,8,0.5,-27)
+TogBtn.BackgroundColor3=Color3.fromRGB(20,20,40); TogBtn.Text="⚡"
+TogBtn.TextColor3=Color3.new(1,1,1); TogBtn.Font=Enum.Font.GothamBold
+TogBtn.TextSize=26; TogBtn.BorderSizePixel=0; TogBtn.ZIndex=20
+Instance.new("UICorner",TogBtn).CornerRadius=UDim.new(1,0)
+local st=Instance.new("UIStroke",TogBtn); st.Color=Color3.fromRGB(120,55,220); st.Thickness=2
+
+local tgDS,tgO,tgM
+TogBtn.InputBegan:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+        tgDS=i.Position; tgO=TogBtn.Position; tgM=false
+    end
+end)
+TogBtn.InputEnded:Connect(function(i)
+    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+        if not tgM then MainFrame.Visible=not MainFrame.Visible end; tgDS=nil
+    end
+end)
+UserInputService.InputChanged:Connect(function(i)
+    if tgDS and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+        local d=i.Position-tgDS
+        if d.Magnitude>6 then
+            tgM=true
+            TogBtn.Position=UDim2.new(tgO.X.Scale,tgO.X.Offset+d.X,tgO.Y.Scale,tgO.Y.Offset+d.Y)
+        end
+    end
+end)
+
+-- ═══ KEYBINDS ═══
+UserInputService.InputBegan:Connect(function(i,gp)
+    if gp then return end
+    if i.KeyCode==Enum.KeyCode.Insert then MainFrame.Visible=not MainFrame.Visible
+    elseif i.KeyCode==Enum.KeyCode.F1 then CONFIG.FlyHack=not CONFIG.FlyHack; if CONFIG.FlyHack then enableFly() end
+    elseif i.KeyCode==Enum.KeyCode.F2 then CONFIG.Noclip=not CONFIG.Noclip
+    elseif i.KeyCode==Enum.KeyCode.F3 then CONFIG.ESP=not CONFIG.ESP
+    elseif i.KeyCode==Enum.KeyCode.F4 then CONFIG.Aimbot=not CONFIG.Aimbot
+    elseif i.KeyCode==Enum.KeyCode.F5 then CONFIG.GodMode=not CONFIG.GodMode
+    end
+end)
+
+print("✅ UC v3.3 | Fix Lag: tab Util | Tap ⚡ = toggle menu")
